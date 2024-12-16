@@ -1,0 +1,133 @@
+using Npgsql;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace PostgresRedisDocker
+{
+
+    public class RedisHandler
+    {
+        ConnectionMultiplexer redis = ConnectionMultiplexer.Connect("localhost:6379");
+        IDatabase bd;
+
+        public RedisHandler()
+            => bd = redis.GetDatabase();
+        public async Task SetData(string index, string value)
+            => await bd.StringSetAsync(index, value);
+
+        public async Task<string> GetData(string index)
+            => await bd.StringGetAsync(index);
+    }
+    public interface IJsonReadStrategy
+    {
+        Task<UserClass[]> ReadJson(string path);
+    }
+    public class JsonReadStrategy : IJsonReadStrategy
+    {
+        public async Task<UserClass[]> ReadJson(string path)
+        {
+            using (StreamReader reader = new StreamReader(path))
+            {
+                string content = await reader.ReadToEndAsync();
+
+                UserClass[] users = JsonConvert.DeserializeObject<UserClass[]>(content);
+                return users;
+            }
+        }
+    }
+
+    public class JsonDelegate
+    {
+        public event Func<UserClass[], Task> DataRead;
+
+        public async Task Read(string path, IJsonReadStrategy strat)
+        {
+            UserClass[] users = await strat.ReadJson(path);
+            if (DataRead != null)
+                await DataRead(users);
+        }
+    }
+    internal class Program
+    {
+        static async Task Main(string[] args)
+        {
+            const string jsonPath = @"C:\Users\Нурмухаммед\Downloads\Telegram Desktop\users2.json";
+
+            var postgres = new PostgresDB();
+            var redis = new RedisHandler();
+
+            await postgres.CreateTable();
+
+            try
+            {
+                var reader = new JsonDelegate();
+                reader.DataRead += async (users) =>
+                {
+                    await Parallel.ForEachAsync(users, async (user, cancellationToken) =>
+                    {
+                        await postgres.AddInDB(user.Id, user.Name, user.Email, user.Age, user.IsActive);
+                        await redis.SetData("Last", JsonConvert.SerializeObject(user));
+                    });
+                    Console.WriteLine("\nЗапись добавлена в Постгрес \nПоследняя запись в Редис обновлена");
+                };
+
+                IJsonReadStrategy strat = new JsonReadStrategy();
+                string last = await redis.GetData("Last");
+                await reader.Read(jsonPath, strat);
+
+                Console.WriteLine($"Последняя запись в Redis: {last}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Ошибка: " + ex.ToString());
+            }
+        }
+    }
+    public class UserClass
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = null!;
+        public string Email { get; set; } = null!;
+        public int Age { get; set; }
+        public bool IsActive { get; set; }
+    }
+    public class PostgresDB
+    {
+        string postgresConnectionString = "Host=localhost;Username=postgres;Port=5432;Password=password;Database=mydatabase";
+
+        public async Task CreateTable()
+        {
+            using (var connection = new NpgsqlConnection(postgresConnectionString))
+            {
+                await connection.OpenAsync();
+                var command = new NpgsqlCommand(@"CREATE TABLE IF NOT EXISTS Users 
+                    (Id SERIAL PRIMARY KEY,
+                    Name TEXT NOT NULL,
+                    Email TEXT NOT NULL,
+                    Age INT,
+                    IsActive BOOLEAN)", connection);
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+
+        public async Task AddInDB(int id, string name, string email, int age, bool isActive)
+        {
+            using (var connection = new NpgsqlConnection(postgresConnectionString))
+            {
+                await connection.OpenAsync();
+                var command = new NpgsqlCommand(
+                    @"INSERT INTO Users (Id, Name, Email, Age, IsActive)
+                    VALUES (@id, @name, @email, @age, @isActive) ON CONFLICT (Id) DO NOTHING", connection);
+                command.Parameters.AddWithValue("id", id);
+                command.Parameters.AddWithValue("name", name);
+                command.Parameters.AddWithValue("email", email);
+                command.Parameters.AddWithValue("age", age);
+                command.Parameters.AddWithValue("isActive", isActive);
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+    }
+}
