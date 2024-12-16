@@ -54,7 +54,7 @@ namespace PostgresRedisDocker
     {
         static async Task Main(string[] args)
         {
-            const string jsonPath = @"C:\Users\Нурмухаммед\Downloads\Telegram Desktop\users2.json";
+            const string jsonPath = @"C:\Users\Стефан\Downloads\Telegram Desktop\users2.json";
 
             var postgres = new PostgresDB();
             var redis = new RedisHandler();
